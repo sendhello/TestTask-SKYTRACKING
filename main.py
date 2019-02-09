@@ -10,11 +10,13 @@ from sqlalchemy import create_engine, Column, Integer, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
+from aiohttp.client_exceptions import ServerDisconnectedError, ClientConnectorError, ClientOSError, ClientPayloadError
 
-logging.basicConfig(level='DEBUG')
+logging.basicConfig(level='DEBUG', filename='log.log')
 
 Base = declarative_base()
 t0 = time()
+s = 0
 
 
 class Page(Base):
@@ -33,26 +35,37 @@ class Page(Base):
         return f'{self.url}, {self.request_depth}, {self.parent}'
 
 
-def write_to_file(data):
-    with open('res.txt', 'a', encoding='utf-8') as f:
-        f.write(str(data))
-
-
 async def fetch(url, session):
-    async with session.get(url, allow_redirects=True) as response:
-        return await response.read()
-
+    for i in range(1, 4):
+        logging.debug(i)
+        try:
+            logging.debug(f'{datetime.now()}:    try ({i}) run session.get with url: "{url}"')
+            async with session.get(url, allow_redirects=True) as response:
+                return await response.read()
+        except ServerDisconnectedError as e:
+            logging.error(f'{datetime.now()}:    Error ServerDisconnectedError: {e}, url: "{url}"')
+            continue
+        except ClientConnectorError as e:
+            logging.error(f'{datetime.now()}:    Error ClientConnectorError: {e}, url: "{url}"')
+            continue
+        except ClientOSError as e:
+            logging.error(f'{datetime.now()}:    Error ClientOSError: {e}, url: "{url}"')
+            continue
+        except ClientPayloadError as e:
+            logging.error(f'{datetime.now()}:    Error ClientPayloadError: {e}, url: "{url}"')
+            continue
+    else:
+        logging.debug(f'{datetime.now()}:    return "".encode()')
+        return ''.encode()
 
 async def get_content(url, session, depth, depth_curent, sql_session, parent):
     if parent == 0:
-        page = Page(url, depth, parent)
+        page = Page(url, depth_curent, parent)
         sql_session.add(page)
         sql_session.commit()
         sql_session.close()
 
-    for id in sql_session.query(Page.id).filter(Page.url == url):
-        parent = id[0]
-        break
+    parent = sql_session.query(Page).filter(Page.url == url)[-1].id
 
     response = await fetch(url, session)
 
@@ -63,9 +76,11 @@ async def get_content(url, session, depth, depth_curent, sql_session, parent):
             links[i] = 'https://ru.wikipedia.org/wiki/' + links[i]
     depth_curent += 1
     tasks = []
+    global s
+    s += len(links)
+    logging.debug(f'{datetime.now()}:    s = {s}, depth={depth_curent}')
     for link in links:
-        page = Page(link, depth_curent, parent)
-        sql_session.add(page)
+        sql_session.add(Page(link, depth_curent, parent))
         if depth_curent < depth:
             tasks.append(get_content(link, session, depth, depth_curent, sql_session, parent))
     sql_session.commit()
@@ -93,8 +108,8 @@ async def main(url, depth):
 
 
 if __name__ == '__main__':
-    url = 'https://ru.wikipedia.org/wiki/Служебная:Случайная_страница'
-    depth = 3
+    url = 'https://ru.wikipedia.org/wiki/Плаунок_Мёллендорфа'
+    depth = 2
 
     asyncio.run(main(url, depth))
 
