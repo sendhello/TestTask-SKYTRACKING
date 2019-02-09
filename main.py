@@ -16,7 +16,6 @@ logging.basicConfig(level='DEBUG', filename='log.log')
 
 Base = declarative_base()
 t0 = time()
-s = 0
 
 
 class Page(Base):
@@ -36,64 +35,61 @@ class Page(Base):
 
 
 async def fetch(url, session):
+    log_error = ''
     for i in range(1, 4):
-        logging.debug(i)
         try:
-            logging.debug(f'{datetime.now()}:    try ({i}) run session.get with url: "{url}"')
+            logging.info(f'{datetime.now()}:    trying ({i}) to run session.get with url: {url}')
             async with session.get(url, allow_redirects=True) as response:
                 return await response.read()
         except ServerDisconnectedError as e:
-            logging.error(f'{datetime.now()}:    Error ServerDisconnectedError: {e}, url: "{url}"')
+            log_error = f'{datetime.now()}:    Error ServerDisconnectedError: {e}, url: {url}'
+            logging.warning(log_error)
             continue
         except ClientConnectorError as e:
-            logging.error(f'{datetime.now()}:    Error ClientConnectorError: {e}, url: "{url}"')
+            log_error = f'{datetime.now()}:    Error ClientConnectorError: {e}, url: {url}'
+            logging.warning(log_error)
             continue
         except ClientOSError as e:
-            logging.error(f'{datetime.now()}:    Error ClientOSError: {e}, url: "{url}"')
+            log_error = f'{datetime.now()}:    Error ClientOSError: {e}, url: {url}'
+            logging.warning(log_error)
             continue
         except ClientPayloadError as e:
-            logging.error(f'{datetime.now()}:    Error ClientPayloadError: {e}, url: "{url}"')
+            log_error = f'{datetime.now()}:    Error ClientPayloadError: {e}, url: {url}'
+            logging.warning(log_error)
             continue
     else:
-        logging.debug(f'{datetime.now()}:    return "".encode()')
+        logging.error(log_error)
         return ''.encode()
+
 
 async def get_content(url, session, depth, depth_curent, sql_session, parent):
     if parent == 0:
         page = Page(url, depth_curent, parent)
         sql_session.add(page)
         sql_session.commit()
-        sql_session.close()
-
-    parent = sql_session.query(Page).filter(Page.url == url)[-1].id
 
     response = await fetch(url, session)
 
-    links = []
-    if depth_curent < depth:
-        links = re.findall(r"<a.*?href=[\"\']{1}/wiki/(.*?)[\"\']{1}.*?>", str(response.decode()))
-        for i in range(len(links)):
-            links[i] = 'https://ru.wikipedia.org/wiki/' + links[i]
+    links = re.findall(r"<a.*?href=[\"\']{1}/wiki/(.*?)[\"\']{1}.*?>", str(response.decode()))
+    for i in range(len(links)):
+        links[i] = 'https://ru.wikipedia.org/wiki/' + links[i]
+
     depth_curent += 1
     tasks = []
-    global s
-    s += len(links)
-    logging.debug(f'{datetime.now()}:    s = {s}, depth={depth_curent}')
-    for link in links:
-        sql_session.add(Page(link, depth_curent, parent))
-        if depth_curent < depth:
-            tasks.append(get_content(link, session, depth, depth_curent, sql_session, parent))
-    sql_session.commit()
-    sql_session.close()
-
-    logging.debug(f'{datetime.now()}:    Send to GATHER: {len(tasks)} elements.')
-    logging.debug(f'{datetime.now()}:    All tasks: {len(asyncio.tasks.all_tasks())}')
-    await asyncio.gather(*tasks)
-    logging.debug(f'{datetime.now()}:    After GATHER')
+    if links:
+        parent = sql_session.query(Page).filter(Page.url == url)[-1].id
+        for link in links:
+            sql_session.add(Page(link, depth_curent, parent))
+            if depth_curent < depth:
+                tasks.append(get_content(link, session, depth, depth_curent, sql_session, parent))
+        sql_session.commit()
+        logging.debug(f'{datetime.now()}:    All tasks in eventloop: {len(asyncio.tasks.all_tasks())}')
+        if tasks:
+            logging.debug(f'{datetime.now()}:    Send to eventloop: {len(tasks)} tasks.')
+            await asyncio.gather(*tasks)
 
 
-async def main(url, depth):
-    engine_string = 'postgresql+psycopg2://wiki:wikipass@localhost:5432/wiki'
+async def main(url, depth, engine_string):
     engine = create_engine(engine_string)
     Base.metadata.create_all(engine)
     SQL_Session = sessionmaker(bind=engine)
@@ -108,9 +104,9 @@ async def main(url, depth):
 
 
 if __name__ == '__main__':
-    url = 'https://ru.wikipedia.org/wiki/Плаунок_Мёллендорфа'
-    depth = 2
+    url = 'https://ru.wikipedia.org/wiki/Служебная:Случайная_страница'
+    engine_string = 'postgresql+psycopg2://wiki:wikipass@localhost:5432/wiki'
+    depth = 3
 
-    asyncio.run(main(url, depth))
-
-    logging.debug(f'{datetime.now()}:    Time of run: {time() - t0}')
+    asyncio.run(main(url, depth, engine_string))
+    logging.info(f'{datetime.now()}:    Time of work: {time() - t0}')
