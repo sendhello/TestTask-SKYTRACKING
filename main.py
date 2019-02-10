@@ -6,7 +6,7 @@ import re
 import logging
 
 from time import time
-from sqlalchemy import create_engine, Column, Integer, Text
+from sqlalchemy import create_engine, Column, Integer, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -16,6 +16,7 @@ logging.basicConfig(level='DEBUG', filename='log.log')
 
 Base = declarative_base()
 t0 = time()
+visited = {}
 
 
 class Page(Base):
@@ -23,15 +24,27 @@ class Page(Base):
     id = Column(Integer, primary_key=True)
     url = Column(Text)
     request_depth = Column(Integer)
-    parent = Column(Integer)
 
-    def __init__(self, url, request_depth, parent):
+    def __init__(self, url, request_depth):
         self.url = url
         self.request_depth = request_depth
-        self.parent = parent
 
     def __repr__(self):
-        return f'{self.url}, {self.request_depth}, {self.parent}'
+        return f'{self.url}, {self.request_depth}'
+
+
+class Communication(Base):
+    __tablename__ = 'page_communication'
+    id = Column(Integer, primary_key=True)
+    from_page_id = Column(Integer, ForeignKey('wiki_page.id', ondelete='CASCADE'))
+    link_id = Column(Integer, ForeignKey('wiki_page.id', ondelete='CASCADE'))
+
+    def __init__(self, from_page_id, link_id):
+        self.from_page_id = from_page_id
+        self.link_id = link_id
+
+    def __repr__(self):
+        return f'{self.from_page_id}, {self.link_id}'
 
 
 async def fetch(url, session):
@@ -62,27 +75,29 @@ async def fetch(url, session):
         return ''.encode()
 
 
-async def get_content(url, session, depth, depth_curent, sql_session, parent):
-    if parent == 0:
-        page = Page(url, depth_curent, parent)
-        sql_session.add(page)
-        sql_session.commit()
-
+async def get_content(url, session, depth, depth_curent, sql_session, parent_page):
     response = await fetch(url, session)
-
     links = re.findall(r"<a.*?href=[\"\']{1}/wiki/(.*?)[\"\']{1}.*?>", str(response.decode()))
-    for i in range(len(links)):
-        links[i] = 'https://ru.wikipedia.org/wiki/' + links[i]
 
-    depth_curent += 1
+    global visited
     tasks = []
+    depth_curent += 1
+
     if links:
-        parent = sql_session.query(Page).filter(Page.url == url)[-1].id
         for link in links:
-            sql_session.add(Page(link, depth_curent, parent))
-            if depth_curent < depth:
-                tasks.append(get_content(link, session, depth, depth_curent, sql_session, parent))
+            link = 'https://ru.wikipedia.org/wiki/' + link
+            if link not in visited:
+                page = Page(link, depth_curent)
+                sql_session.add(page)
+                sql_session.commit()
+                sql_session.add(Communication(parent_page.id, page.id))
+                visited[link] = page.id
+                if depth_curent < depth:
+                    tasks.append(get_content(link, session, depth, depth_curent, sql_session, page))
+            else:
+                sql_session.add(Communication(parent_page.id, visited[link]))
         sql_session.commit()
+
         logging.debug(f'{datetime.now()}:    All tasks in eventloop: {len(asyncio.tasks.all_tasks())}')
         if tasks:
             logging.debug(f'{datetime.now()}:    Send to eventloop: {len(tasks)} tasks.')
@@ -95,16 +110,22 @@ async def main(url, depth, engine_string):
     SQL_Session = sessionmaker(bind=engine)
     sql_session = SQL_Session()
 
-    parent = 0
     depth_curent = 0
+
+    parent_page = Page(url, depth_curent)
+    sql_session.add(parent_page)
+    sql_session.commit()
+
+    global visited
+    visited[url] = parent_page.id
 
     session_timeout = aiohttp.ClientTimeout(total=None)
     async with aiohttp.ClientSession(timeout=session_timeout) as session:
-        await get_content(url, session, depth, depth_curent, sql_session, parent)
+        await get_content(url, session, depth, depth_curent, sql_session, parent_page)
 
 
 if __name__ == '__main__':
-    url = 'https://ru.wikipedia.org/wiki/Служебная:Случайная_страница'
+    url = 'https://ru.wikipedia.org/wiki/Плаунок_Мёллендорфа'
     engine_string = 'postgresql+psycopg2://wiki:wikipass@localhost:5432/wiki'
     depth = 3
 
