@@ -65,7 +65,6 @@ async def fetch(url, session):
         try:
             logging.info(f'{datetime.now()}:    trying ({i}) to run session.get with url: {url}')
             async with session.get(url, allow_redirects=True) as response:
-                print(response)
                 return await response.read()
         except ServerDisconnectedError as e:
             log_error = f'{datetime.now()}:    Error ServerDisconnectedError: {e}, url: {url}'
@@ -91,9 +90,8 @@ async def fetch(url, session):
 async def get_content(session, depth, depth_curent, sql_session, parent_page):
     """
     Ассинхронная рекурсивная функция, вызывающая функцию fetch, и получаящая от нее web-страницу.
-    Далее выполняется парсинг ссылок на полученной web-странице и запись их
-    в базу данных. Если глубина запроса не максимальная, рекурсивно вызывае себя.
-    вызывающая себя.
+    На полученной web-странице выполняется парсинг ссылок и запись их в базу данных. 
+	Если глубина запроса не максимальная, рекурсивно вызывает себя.
     :param session: клиентская сессия aiohttp
     :param depth: максимальная глубина запроса
     :param depth_curent: текущая глубина запроса
@@ -105,19 +103,27 @@ async def get_content(session, depth, depth_curent, sql_session, parent_page):
 
     global visited
     tasks = []
+    pages = {}
     depth_curent += 1
 
     if links:
-        for link in links:
-            link = 'https://ru.wikipedia.org/wiki/' + link
+        for i in range(len(links)):
+            links[i] = 'https://ru.wikipedia.org/wiki/' + links[i]
+
+        unical_links = list(set(links) - set(visited))
+        for link in unical_links:
             if link not in visited:
                 page = Page(link, depth_curent)
                 sql_session.add(page)
-                # sql_session.commit()
-                sql_session.add(Communication(parent_page.id, sql_session.query(Page).filter_by(url=link).first().id))
-                visited[link] = page.id
+                pages[link] = page
                 if depth_curent < depth:
                     tasks.append(get_content(session, depth, depth_curent, sql_session, page))
+        sql_session.commit()
+
+        for link in links:
+            if link not in visited:
+                sql_session.add(Communication(parent_page.id, pages[link].id))
+                visited[link] = pages[link].id
             else:
                 sql_session.add(Communication(parent_page.id, visited[link]))
         sql_session.commit()
